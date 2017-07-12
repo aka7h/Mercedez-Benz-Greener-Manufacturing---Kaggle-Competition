@@ -1,0 +1,160 @@
+---
+title: "Mercedes-Benz Greener Manufacturing - Kaggle Competition"
+author: "Akkash K N R"
+date: "12 July 2017"
+output: html_document
+---
+
+### Can you cut the time a Mercedes-Benz spends on the test bench?
+
+https://www.kaggle.com/c/mercedes-benz-greener-manufacturing
+
+In this competition, Daimler is challenging Kagglers to tackle the curse of dimensionality and reduce the time that cars spend on the test bench. Competitors will work with a dataset representing different permutations of Mercedes-Benz car features to predict the time it takes to pass testing. Winning algorithms will contribute to speedier testing, resulting in lower carbon dioxide emissions without reducing Daimler's standards.
+
+#### TRAIN - 0.6243, PUBLIC LB - 0.55167, PRIVATE LB - 0.55003
+
+
+###Loading the data
+```{r}
+require(glmnet)
+require(ggplot2)
+
+mbTrain <- read.csv('train.csv', header = TRUE)
+mbTest <- read.csv('test.csv', header = TRUE)
+ID <- mbTest$ID
+str(mbTrain[,1:20])
+
+mbTest$y <- NA
+mb_TT <- rbind(mbTrain,mbTest)
+mbTest$y <- NULL
+
+```
+
+###Analysing Y variable
+
+```{r}
+plot(mbTrain$y[order(mbTrain$y)], main="Y variable")
+plot(density(mbTrain$y), main="Density plot") #The data is right skewed
+```
+
+###Checking for missing data
+```{r}
+sum(is.na(mbTrain)) #No missing data
+sum(is.na(mbTest))
+```
+
+
+###Lets check for the unique
+```{r}
+col_names <- colnames(mbTrain[,-c(1:2)])
+
+#function to collect features with unique values equal to 1
+drop_features <- function(d){
+  cc <- colnames(d)
+  c <- vector()
+  for(i in cc){
+    if(length(unique(d[,i])) == 1){
+      c <- c(c,i)
+    }    
+  }
+  return(c)
+}
+
+train_drop <- drop_features(mbTrain)
+test_drop <- drop_features(mbTest[,-2])
+final_drop <- c(train_drop, test_drop)
+```
+
+###Lets remove the unique values
+```{r}
+mbTrain[,final_drop] <- NULL
+mbTest[,final_drop] <- NULL
+```
+
+###Convert the categorical features to numeric
+```{r}
+
+LETTERS702 <- tolower(c(LETTERS,sapply(LETTERS,function(x) paste0(x,LETTERS))))
+col_names <- setdiff(col_names,final_drop)
+
+cat_col <- c()
+for(i in col_names){
+  if(class(mbTrain[,i])=='factor'){
+    cat_col <- append(cat_col,i,after = length(cat_col))
+  }  
+}
+```
+
+
+```{r}
+for(i in cat_col){
+  lvl <- intersect(LETTERS702,unique(mbTrain[,i]))
+  label <- match(lvl, LETTERS702)
+  mb_TT[[i]]<- as.integer(as.character(factor(mb_TT[[i]],levels=lvl,labels = label)))
+}
+
+dTrain <- mb_TT[1:nrow(mbTrain),]
+dTest <- mb_TT[4210:nrow(mb_TT),]
+dTest$y <- NULL
+```
+
+###Implementing xgBoost
+```{r}
+library(xgboost)
+
+train_x <- dTrain
+train_x[] <- lapply(train_x,as.numeric)
+train_y <- train_x$y
+train_x$y <- NULL
+
+test_x <- dTest
+test_x[] <- lapply(test_x,as.numeric)
+
+str(train_x)
+newtrain <- xgb.DMatrix(as.matrix(train_x),label=train_y)
+newtest <- xgb.DMatrix(as.matrix(test_x))
+```
+
+```{r}
+xgb_param <- list(colsample_bytree = 0.7, #how many variables to consider for each tree
+                  subsample = 0.7, #how much of the data to use for each tree
+                  booster = "gbtree",
+                  max_depth = 5, #how many levels in the tree
+                  eta = 0.02, #shrinkage rate to control overfitting through conservative approach
+                  eval_metric = "rmse",
+                  objective = "reg:linear",
+                  gamma = 2.178051
+                  # alpha=0.5,
+                  # lambda=0.1938
+                  )
+
+xgbcv <- xgb.cv(params = xgb_param, nfold = 10,nrounds = 500, print_every_n = 10,early_stopping_rounds = 20,data = newtrain)
+xgbcv
+
+xgb_model <- xgb.train(xgb_param,newtrain,nrounds = xgbcv$best_iteration,print_every_n = 1)
+xgb_model
+
+a <- dTrain$y
+p <- predict(xgb_model,newtrain)
+q<- predict(xgb_model,newtest)
+```
+
+```{r}
+#train
+R2_tr <- 1 - (sum((a-p)^2)/sum((a-mean(a))^2))#0.6243
+
+predictions <- predict(xgb_model,newtest)
+sum(is.na(predictions))
+```
+
+
+
+```{r}
+submission <- data.frame('ID'=ID,'y'=predictions)
+colnames(submission) <- c('ID','y')
+filename <- paste('ak_xgbTree_277_2.178051_0.02',format(Sys.time(),"%Y%m%d%H%M%s"),sep = '_')
+#write.csv(submission,paste0(filename,'.csv',collapse = ''),row.names = FALSE)
+```
+
+
+
